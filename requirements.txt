@@ -1,0 +1,4 @@
+pyowm
+textual
+requests
+schedule
