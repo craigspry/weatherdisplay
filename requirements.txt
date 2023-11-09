@@ -2,3 +2,4 @@ pyowm
 textual
 requests
 schedule
+python-decouple

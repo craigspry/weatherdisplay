@@ -4,14 +4,17 @@ from time import sleep
 from queue import Queue
 from threading import Thread
 import paho.mqtt.client as mqtt
+from rich.align import Align
 from rich.console import Console
 from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
 from rich.live import Live
 from rich.box import ROUNDED, Box
+from rich.traceback import install
 import requests
 from decouple import config
+import schedule 
 
 console = Console()
 msg_queue = Queue()
@@ -20,8 +23,10 @@ forecast_queue = Queue()
 weather_api_key = config('WEATHER_API_KEY')
 latitude = config('WEATHER_LATITUDE')
 longitude = config('WEATHER_LONGITUDE')
+weather_mqtt_server = config('WEATHER_MQTT_SERVER')
 forecast_url = f"https://api.openweathermap.org/data/2.5/forecast?units=metric&lat=-{latitude}&lon={longitude}&appid={weather_api_key}"
 current_conditions_url = f"https://api.openweathermap.org/data/2.5/weather?units=metric&lat={latitude}&lon={longitude}&appid={weather_api_key}"
+install(show_locals=True)
 
 def get_json(url):
     resp = requests.get(url)
@@ -51,20 +56,17 @@ class Forecast:
             grid.add_row("max", forcast.main.temp_max)
 
 class CurrentConditions:
-   _queue_data = QueueData(conditions_queue)
+   def set_data(self, dta):
+       self.data = dta
 
    def __rich__(self) -> Panel:
-        data = CurrentConditions._queue_data.get_data()
-        grid = Table.grid(expand=True)
-        grid.add_column(justify="center", ratio=1)
-        grid.add_column(justify="right")
-        if data:
-            for key, val in data.items():
-                grid.add_row(key, val)
-        #if data:
-        #    grid.add_row("max", data["main"]["temp_max"])
-        #    grid.add_row("min", data["main"]["temp_min"])
-        return Panel(grid, style="white on blue")
+        grid = Table.grid()
+        grid.add_column(justify="left", width=20)
+        grid.add_column(justify="left")
+        if self.data:
+            for key, val in self.data["main"].items():
+                grid.add_row(key.capitalize(), str(val))
+        return Panel(Align(grid, align="center"), style="white on blue")
 
 def make_layout() -> Layout:
     layout = Layout(name="root")
@@ -80,11 +82,10 @@ def make_layout() -> Layout:
 class Header:
     def __rich__(self) -> Panel:
         grid = Table.grid(expand=True)
-        grid.add_column(justify="center", ratio=1)
+        grid.add_column(justify="right")
         grid.add_column(justify="right")
         grid.add_row("Weather", datetime.now().ctime())
         return Panel(grid, style="white on blue")
-
 
 def _get_as_float(d):
     try:
@@ -93,19 +94,17 @@ def _get_as_float(d):
         pass
     return None
 
-
-
 class WeatherStation:
     _queue_data = QueueData(msg_queue)
     def __rich__(self) -> Panel:
         try:
             data = WeatherStation._queue_data.get_data()
-            grid = Table.grid(expand=True)
-            grid.add_column(justify="center", ratio=1)
-            grid.add_column(justify="center")
+            grid = Table.grid()
+            grid.add_column(justify="left", width=20)
+            grid.add_column(justify="left")
             for key, val in data.items():
                 grid.add_row(key, val)
-            return Panel(grid, style="white on blue")
+            return Panel(Align(grid, align='center'), style="white on blue")
         except:
             grid = Table.grid(expand=True)
             return Panel(grid)
@@ -123,35 +122,25 @@ def read_mqqt(out_q):
     client = mqtt.Client("display_client", userdata=client_data)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect("raspberrypi.local", 1883, 60)
+    client.connect(weather_mqtt_server, 1883, 60)
     client.loop_start()
 
-def read_current_conditions(out_q):
-    data = get_json(current_conditions_url)
-    if data:
-        out_q.put(data)
-    else:
-        out_q.put({"temp_min": -3423})
-
-def read_forecast(out_q):
-    while True:
-        data = get_json(forecast_url)
-        if data:
-            out_q.put(data)
-        sleep(3600)
-
+def update_from_openweather(current_conditions):
+    current_conditions.set_data(get_json(current_conditions_url))
+    
 def main():
     t1 = Thread(target=read_mqqt, args=(msg_queue,), daemon=True)
     t1.start()
-    #read_current_conditions(conditions_queue)
-    #t2.start()
+    current_conditions = CurrentConditions()
+    schedule.every(3).hours.do(update_from_openweather, current_conditions=current_conditions)
+    current_conditions.set_data(get_json(current_conditions_url))
     layout = make_layout()
     layout["header"].update(Header())
     layout["Current"].update(WeatherStation())
-    layout["Forecast"].update(CurrentConditions())
+    layout["Forecast"].update(current_conditions)
     with Live(layout, refresh_per_second=10, screen=True):
         while True:
-            # data = msg_queue.get()
+            schedule.run_pending()
             sleep(2)
 
 if __name__ == "__main__":
